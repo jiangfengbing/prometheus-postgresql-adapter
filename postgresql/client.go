@@ -77,10 +77,6 @@ const (
 	sqlInsertValues   = "INSERT INTO %s_values SELECT tmp.prom_time, tmp.prom_value, l.id FROM (SELECT prom_time(sample), prom_value(sample), prom_name(sample), prom_labels(sample) FROM %s_tmp) tmp INNER JOIN %s_labels l on tmp.prom_name=l.metric_name AND  tmp.prom_labels=l.labels;"
 )
 
-var (
-	createTmpTableStmt *sql.Stmt
-)
-
 // NewClient creates a new PostgreSQL client
 func NewClient(cfg *Config) *Client {
 	connStr := fmt.Sprintf("host=%v port=%v user=%v dbname=%v password='%v' sslmode=%v connect_timeout=10",
@@ -112,12 +108,6 @@ func NewClient(cfg *Config) *Client {
 
 		if err != nil {
 			log.Error("err", err)
-			os.Exit(1)
-		}
-
-		createTmpTableStmt, err = db.Prepare(fmt.Sprintf(sqlCreateTmpTable, cfg.table))
-		if err != nil {
-			log.Error("msg", "Error on preparing create tmp table statement", "err", err)
 			os.Exit(1)
 		}
 	} else {
@@ -213,14 +203,14 @@ func (c *Client) Write(samples model.Samples, table string) error {
 
 	defer tx.Rollback()
 
-	_, err = tx.Stmt(createTmpTableStmt).Exec()
+	if table == "" {
+		table = c.cfg.table
+	}
+
+	_, err = tx.Exec(fmt.Sprintf(sqlCreateTmpTable, table))
 	if err != nil {
 		log.Error("msg", "Error executing create tmp table", "err", err)
 		return err
-	}
-
-	if table == "" {
-		table = c.cfg.table
 	}
 
 	var copyTable string
