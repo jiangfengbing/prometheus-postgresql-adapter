@@ -202,7 +202,7 @@ func metricString(m model.Metric) string {
 }
 
 // Write implements the Writer interface and writes metric samples to the database
-func (c *Client) Write(samples model.Samples) error {
+func (c *Client) Write(samples model.Samples, table string) error {
 	begin := time.Now()
 	tx, err := c.DB.Begin()
 
@@ -219,13 +219,17 @@ func (c *Client) Write(samples model.Samples) error {
 		return err
 	}
 
+	if table == "" {
+		table = c.cfg.table
+	}
+
 	var copyTable string
 	if len(c.cfg.copyTable) > 0 {
 		copyTable = c.cfg.copyTable
 	} else if c.cfg.pgPrometheusNormalize {
-		copyTable = fmt.Sprintf("%s_tmp", c.cfg.table)
+		copyTable = fmt.Sprintf("%s_tmp", table)
 	} else {
-		copyTable = fmt.Sprintf("%s_samples", c.cfg.table)
+		copyTable = fmt.Sprintf("%s_samples", table)
 	}
 	copyStmt, err := tx.Prepare(fmt.Sprintf(sqlCopyTable, copyTable))
 
@@ -255,8 +259,8 @@ func (c *Client) Write(samples model.Samples) error {
 		return err
 	}
 
-	if copyTable == fmt.Sprintf("%s_tmp", c.cfg.table) {
-		stmtLabels, err := tx.Prepare(fmt.Sprintf(sqlInsertLabels, c.cfg.table, c.cfg.table, c.cfg.table))
+	if copyTable == fmt.Sprintf("%s_tmp", table) {
+		stmtLabels, err := tx.Prepare(fmt.Sprintf(sqlInsertLabels, table, table, table))
 		if err != nil {
 			log.Error("msg", "Error on preparing labels statement", "err", err)
 			return err
@@ -267,7 +271,7 @@ func (c *Client) Write(samples model.Samples) error {
 			return err
 		}
 
-		stmtValues, err := tx.Prepare(fmt.Sprintf(sqlInsertValues, c.cfg.table, c.cfg.table, c.cfg.table))
+		stmtValues, err := tx.Prepare(fmt.Sprintf(sqlInsertValues, table, table, table))
 		if err != nil {
 			log.Error("msg", "Error on preparing values statement", "err", err)
 			return err
@@ -381,11 +385,15 @@ func (l *sampleLabels) len() int {
 }
 
 // Read implements the Reader interface and reads metrics samples from the database
-func (c *Client) Read(req *prompb.ReadRequest) (*prompb.ReadResponse, error) {
+func (c *Client) Read(req *prompb.ReadRequest, table string) (*prompb.ReadResponse, error) {
 	labelsToSeries := map[string]*prompb.TimeSeries{}
 
+	if table == "" {
+		table = c.cfg.table
+	}
+
 	for _, q := range req.Queries {
-		command, err := c.buildCommand(q)
+		command, err := c.buildCommand(q, table)
 
 		if err != nil {
 			return nil, err
@@ -489,7 +497,7 @@ func toTimestamp(milliseconds int64) time.Time {
 	return time.Unix(sec, nsec)
 }
 
-func (c *Client) buildQuery(q *prompb.Query) (string, error) {
+func (c *Client) buildQuery(q *prompb.Query, table string) (string, error) {
 	matchers := make([]string, 0, len(q.Matchers))
 	labelEqualPredicates := make(map[string]string)
 
@@ -552,11 +560,11 @@ func (c *Client) buildQuery(q *prompb.Query) (string, error) {
 	matchers = append(matchers, fmt.Sprintf("time <= '%v'", toTimestamp(q.EndTimestampMs).Format(time.RFC3339)))
 
 	return fmt.Sprintf("SELECT time, name, value, labels FROM %s WHERE %s %s ORDER BY time",
-		c.cfg.table, strings.Join(matchers, " AND "), equalsPredicate), nil
+		table, strings.Join(matchers, " AND "), equalsPredicate), nil
 }
 
-func (c *Client) buildCommand(q *prompb.Query) (string, error) {
-	return c.buildQuery(q)
+func (c *Client) buildCommand(q *prompb.Query, table string) (string, error) {
+	return c.buildQuery(q, table)
 }
 
 func escapeValue(str string) string {

@@ -160,13 +160,13 @@ func parseFlags() *config {
 }
 
 type writer interface {
-	Write(samples model.Samples) error
+	Write(samples model.Samples, table string) error
 	Name() string
 }
 
 type noOpWriter struct{}
 
-func (no *noOpWriter) Write(samples model.Samples) error {
+func (no *noOpWriter) Write(samples model.Samples, table string) error {
 	log.Debug("msg", "Noop writer", "num_samples", len(samples))
 	return nil
 }
@@ -176,7 +176,7 @@ func (no *noOpWriter) Name() string {
 }
 
 type reader interface {
-	Read(req *prompb.ReadRequest) (*prompb.ReadResponse, error)
+	Read(req *prompb.ReadRequest, table string) (*prompb.ReadResponse, error)
 	Name() string
 	HealthCheck() error
 }
@@ -230,6 +230,8 @@ func initElector(cfg *config, db *sql.DB) *util.Elector {
 
 func write(writer writer) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.ParseForm()
+		table := r.Form.Get("db")
 		compressed, err := ioutil.ReadAll(r.Body)
 		if err != nil {
 			log.Error("msg", "Read error", "err", err.Error())
@@ -254,7 +256,7 @@ func write(writer writer) http.Handler {
 		samples := protoToSamples(&req)
 		receivedSamples.Add(float64(len(samples)))
 
-		err = sendSamples(writer, samples)
+		err = sendSamples(writer, samples, table)
 		if err != nil {
 			log.Warn("msg", "Error sending samples to remote storage", "err", err, "storage", writer.Name(), "num_samples", len(samples))
 		}
@@ -283,6 +285,8 @@ func getCounterValue(counter prometheus.Counter) float64 {
 
 func read(reader reader) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.ParseForm()
+		table := r.Form.Get("db")
 		compressed, err := ioutil.ReadAll(r.Body)
 		if err != nil {
 			log.Error("msg", "Read error", "err", err.Error())
@@ -305,7 +309,7 @@ func read(reader reader) http.Handler {
 		}
 
 		var resp *prompb.ReadResponse
-		resp, err = reader.Read(&req)
+		resp, err = reader.Read(&req, table)
 		if err != nil {
 			log.Warn("msg", "Error executing query", "query", req, "storage", reader.Name(), "err", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -359,7 +363,7 @@ func protoToSamples(req *prompb.WriteRequest) model.Samples {
 	return samples
 }
 
-func sendSamples(w writer, samples model.Samples) error {
+func sendSamples(w writer, samples model.Samples, table string) error {
 	atomic.StoreInt64(&lastRequestUnixNano, time.Now().UnixNano())
 	begin := time.Now()
 	shouldWrite := true
@@ -372,7 +376,7 @@ func sendSamples(w writer, samples model.Samples) error {
 		}
 	}
 	if shouldWrite {
-		err = w.Write(samples)
+		err = w.Write(samples, table)
 	} else {
 		log.Debug("msg", fmt.Sprintf("Election id %v: Instance is not a leader. Can't write data", elector.Id()))
 		return nil
